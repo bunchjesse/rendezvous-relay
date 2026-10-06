@@ -1,0 +1,11 @@
+# Runs the relay locally. See README.md for production deployment.
+services:
+  relay:
+    build: .
+    image: rendezvous-relay
+    ports:
+      - "3340:3340"
+    environment:
+      # Comma-separated; leave unset to serve every namespace.
+      - RELAY_ALLOWED_NAMESPACES=${RELAY_ALLOWED_NAMESPACES:-}
+    restart: unless-stopped
