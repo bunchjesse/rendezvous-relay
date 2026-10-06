@@ -31,4 +31,4 @@ docker compose up --build     # the server in a Linux container
 
 ## Deployment
 
-The GitHub workflow tests on Linux and publishes `ghcr.io/bunchjesse/rendezvous-relay` on pushes to `main` and on tags. Production runs that image as the `relay` service in the personal-site repo's `docker-compose.prod.yml` on the bunch.dev droplet, with the allowed namespaces set there.
+The GitHub workflow tests on Linux and publishes `ghcr.io/bunchjesse/rendezvous-relay` on pushes to `main` and on tags. Deployments run that image and set their allowed namespaces themselves; nothing in this repo knows where it's deployed or which applications use it.
