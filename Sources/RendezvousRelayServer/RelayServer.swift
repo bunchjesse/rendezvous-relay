@@ -17,8 +17,9 @@ public struct RelayServerConfiguration: Sendable {
     public var allowedNamespaces: Set<String>?
     /// Most connections served at once. Later ones are closed on arrival.
     public var maxConnections: Int
-    /// Most connections served at once from one IP address. Behind NAT or a
-    /// proxy that hides clients' addresses, those clients share the limit.
+    /// Most connections served at once from one IPv4 address or IPv6 /64,
+    /// the block one IPv6 subscriber typically holds. Behind NAT or a proxy
+    /// that hides clients' addresses, those clients share the limit.
     public var maxConnectionsPerAddress: Int
     /// Most sessions one host may have waiting to be accepted.
     public var maxPendingSessionsPerHost: Int
@@ -124,7 +125,7 @@ public final class RelayServer: Sendable {
                 await withDiscardingTaskGroup { group in
                     do {
                         for try await connection in connections {
-                            let address = connection.channel.remoteAddress?.ipAddress ?? "?"
+                            let address = Self.limitKey(for: connection.channel.remoteAddress)
                             guard admitConnection(from: address) else {
                                 connection.channel.close(promise: nil)
                                 continue
@@ -186,6 +187,19 @@ public final class RelayServer: Sendable {
     }
 
     // MARK: - Connections
+
+    /// The bucket ``RelayServerConfiguration/maxConnectionsPerAddress``
+    /// counts `address` in: its IPv4 address, or its IPv6 /64, so one
+    /// subscriber can't take every slot by rotating through its block.
+    static func limitKey(for address: SocketAddress?) -> String {
+        guard case .v6(let v6)? = address else { return address?.ipAddress ?? "?" }
+        let bytes = withUnsafeBytes(of: v6.address.sin6_addr) { Array($0) }
+        // An IPv4 client on a dual-stack socket arrives as ::ffff:a.b.c.d.
+        if bytes[0..<10].allSatisfy({ $0 == 0 }), bytes[10] == 0xff, bytes[11] == 0xff {
+            return bytes[12...].map(String.init).joined(separator: ".")
+        }
+        return Data(bytes[0..<8]).relayHex + "::/64"
+    }
 
     /// Counts a new connection from `address`, or returns false if it would
     /// pass the overall or per-address limit.
@@ -265,12 +279,16 @@ public final class RelayServer: Sendable {
             return .invalidRequest
         }
         if let allowed = configuration.allowedNamespaces, !allowed.contains(namespace) {
-            // The namespace is the client's; quote and cap it so it can't
-            // forge or flood log lines.
-            configuration.log("Refused namespace \(String(namespace.prefix(64)).debugDescription)")
+            configuration.log("Refused namespace \(Self.loggable(namespace))")
             return .namespaceNotAllowed
         }
         return nil
+    }
+
+    /// `namespace` quoted and capped for a log line: it's the client's, so
+    /// it must not be able to forge or flood lines.
+    private static func loggable(_ namespace: String) -> String {
+        String(namespace.prefix(64)).debugDescription
     }
 
     /// Whether `namespace` is one the proof payloads can carry unambiguously.
@@ -331,13 +349,13 @@ public final class RelayServer: Sendable {
                     state.hosts[key] = nil
                 }
             }
-            configuration.log("Unregistered \(endpointID.prefix(12)) in \(namespace)")
+            configuration.log("Unregistered \(endpointID.prefix(12)) in \(Self.loggable(namespace))")
         }
         // A host reconnecting after a network change replaces its stale
         // registration; only a valid proof can do that.
         replaced?.channel.close(promise: nil)
         try await Self.send(.registered, to: outbound)
-        configuration.log("Registered \(endpointID.prefix(12)) in \(namespace)")
+        configuration.log("Registered \(endpointID.prefix(12)) in \(Self.loggable(namespace))")
 
         let lastHeard = NIOLockedValueBox(NIODeadline.now())
         let pinger = channel.eventLoop.scheduleRepeatedTask(initialDelay: configuration.pingInterval, delay: configuration.pingInterval) { [configuration] task in
@@ -363,17 +381,26 @@ public final class RelayServer: Sendable {
     /// Asks the host `key` to take a new session for this client, and
     /// splices the two once it does.
     private func serveClient(key: HostKey, channel: any Channel, reader: inout FrameReader, outbound: Outbound) async throws {
-        let sessionID = Data((0..<16).map { _ in UInt8.random(in: .min ... .max) }).relayHex
+        let sessionID = Data((0..<RelayFrame.sessionIDByteCount).map { _ in UInt8.random(in: .min ... .max) }).relayHex
         let session = PendingSession(hostKey: key, clientChannel: channel, clientOutbound: outbound)
-        let lookup = state.withLockedValue { state -> (host: HostRegistration?, refusal: RelayRefusal?) in
-            guard let host = state.hosts[key] else { return (nil, .hostOffline) }
-            let waiting = state.sessions.values.count { $0.hostKey == key }
-            guard waiting < configuration.maxPendingSessionsPerHost else { return (nil, .busy) }
-            state.sessions[sessionID] = session
-            return (host, nil)
+        // Either the host to ask, or why there's none to ask.
+        enum Lookup {
+            case host(HostRegistration)
+            case refused(RelayRefusal)
         }
-        guard let host = lookup.host else {
-            try await Self.send(.refused(lookup.refusal ?? .busy), to: outbound)
+        let lookup = state.withLockedValue { state -> Lookup in
+            guard let host = state.hosts[key] else { return .refused(.hostOffline) }
+            let waiting = state.sessions.values.count { $0.hostKey == key }
+            guard waiting < configuration.maxPendingSessionsPerHost else { return .refused(.busy) }
+            state.sessions[sessionID] = session
+            return .host(host)
+        }
+        let host: HostRegistration
+        switch lookup {
+        case .host(let registered):
+            host = registered
+        case .refused(let refusal):
+            try await Self.send(.refused(refusal), to: outbound)
             return
         }
 
@@ -412,15 +439,22 @@ public final class RelayServer: Sendable {
             try await Self.send(.refused(.unknownSession), to: outbound)
             return
         }
-        let splice = Splice(channels: [session.clientChannel, channel])
-        guard session.resolve(with: Pairing(hostOutbound: outbound, splice: splice)) else {
-            try await Self.send(.refused(.unknownSession), to: outbound)
-            return
-        }
-        // Both ends hear `connected` before either can send: each waits for
-        // it, so neither mistakes the other's first bytes for a relay frame.
+        // Each end hears `connected` before the other's bytes, so neither
+        // mistakes them for a relay frame. The host's goes out before the
+        // session resolves, since resolving starts the client's pump toward
+        // it; the client's goes out before this side's pump starts.
         do {
             try await Self.send(.connected, to: outbound)
+        } catch {
+            session.resolve(with: nil)
+            return
+        }
+        let splice = Splice(channels: [session.clientChannel, channel])
+        guard session.resolve(with: Pairing(hostOutbound: outbound, splice: splice)) else {
+            channel.close(promise: nil)
+            return
+        }
+        do {
             try await Self.send(.connected, to: session.clientOutbound)
         } catch {
             // Still pump: the client's side is already splicing and waits for

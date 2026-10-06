@@ -82,7 +82,7 @@ struct TestIdentity: Sendable {
 
     /// The endpoint ID: the public key in lowercase hex.
     var endpointID: String {
-        key.publicKey.rawRepresentation.map { String(format: "%02x", $0) }.joined()
+        key.publicKey.rawRepresentation.relayHex
     }
 
     /// Signs `data` with the key.

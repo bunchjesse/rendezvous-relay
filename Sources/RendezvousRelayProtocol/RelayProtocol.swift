@@ -139,6 +139,17 @@ public enum RelayFrameError: Error, Equatable {
     case undecodable
 }
 
+extension RelayFrame {
+    /// How many random bytes a session ID carries, before hex encoding.
+    package static let sessionIDByteCount = 16
+
+    /// Whether `sessionID` has the shape the relay gives session IDs:
+    /// ``sessionIDByteCount`` bytes as lowercase hex.
+    package static func isWellFormedSessionID(_ sessionID: String) -> Bool {
+        sessionID == sessionID.lowercased() && Data(relayHex: sessionID)?.count == sessionIDByteCount
+    }
+}
+
 extension Data {
     /// Decodes an even-length string of hexadecimal digits, or returns nil.
     package init?(relayHex string: String) {

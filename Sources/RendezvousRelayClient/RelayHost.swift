@@ -162,6 +162,12 @@ public final class RelayHost: Sendable {
                 case .ping:
                     try await send(.pong, on: channel)
                 case .incoming(let sessionID):
+                    // The host signs whatever ID it's given; sign only IDs
+                    // shaped like the relay's own.
+                    guard RelayFrame.isWellFormedSessionID(sessionID) else {
+                        log("Ignored a relayed session with a malformed ID")
+                        continue
+                    }
                     let admitted = accepting.withLockedValue { count in
                         guard count < Self.maxConcurrentAccepts else { return false }
                         count += 1

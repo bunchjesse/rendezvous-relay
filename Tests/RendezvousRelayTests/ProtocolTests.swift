@@ -4,6 +4,17 @@ import RendezvousRelayProtocol
 
 /// The wire framing and proof payloads.
 struct RelayFrameTests {
+    /// Only IDs shaped like the relay's own pass as session IDs, since a
+    /// host signs every ID it accepts: lowercase hex of the right length.
+    @Test func sessionIDsMustBeTheRelaysShape() {
+        let id = String(repeating: "a1", count: RelayFrame.sessionIDByteCount)
+        #expect(RelayFrame.isWellFormedSessionID(id))
+        #expect(!RelayFrame.isWellFormedSessionID(id.uppercased()))
+        #expect(!RelayFrame.isWellFormedSessionID(String(id.dropLast(2))))
+        #expect(!RelayFrame.isWellFormedSessionID(id + "00"))
+        #expect(!RelayFrame.isWellFormedSessionID("rendezvous-relay-listen/1"))
+    }
+
     /// A request survives a round trip through the framing, and a frame that
     /// hasn't fully arrived reads as nothing, leaving the buffer intact for
     /// the bytes still to come.

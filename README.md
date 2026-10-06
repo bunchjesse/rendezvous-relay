@@ -39,6 +39,12 @@ sequenceDiagram
 
 ## Using the client library
 
+Add the package, and depend on `RendezvousRelayClient` (or just `RendezvousRelayProtocol` for the wire types and `RelayAddress`):
+
+```swift
+.package(url: "https://github.com/bunchjesse/rendezvous-relay.git", from: "0.1.0"),
+```
+
 Open the TCP connection yourself, with whatever transport suits the platform (`NIOTransportServices` on Apple platforms, `NIOPosix` elsewhere), then hand the channel to the relay before anything else uses it. Once the relay joins the two ends, your `install` closure adds the application's handlers; any of the peer's bytes that arrived with the relay's last frame are passed on to them.
 
 A client:
@@ -95,7 +101,7 @@ Pushes to `main` publish `ghcr.io/bunchjesse/rendezvous-relay:latest` (and a tag
 ## Security notes
 
 - **No TLS on the relay hop.** Everything the relay forwards is already encrypted end to end by the peers, and a host proves it owns its key before it's registered, so TLS would hide only the endpoint IDs, namespaces, and traffic volume from someone on the network.
-- **Limits.** By default the relay serves 4096 connections at once, 64 from any one IP address (clients behind one NAT share that), and 32 pending sessions per host; requests must arrive within 10 seconds, and hosts must take a session within 10 seconds. See `RelayServerConfiguration`.
+- **Limits.** By default the relay serves 4096 connections at once, 64 from any one IPv4 address or IPv6 /64 (clients behind one NAT share that), and 32 pending sessions per host; requests must arrive within 10 seconds, and hosts must take a session within 10 seconds. See `RelayServerConfiguration`.
 
 ## Development
 

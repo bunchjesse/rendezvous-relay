@@ -1,4 +1,5 @@
-# Runs the relay locally. See README.md for production deployment.
+# Runs the relay locally. To deploy it, run the published image
+# (ghcr.io/bunchjesse/rendezvous-relay) the same way; see README.md.
 services:
   relay:
     build: .
